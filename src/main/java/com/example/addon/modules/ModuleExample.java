@@ -1,66 +1,72 @@
 package com.example.addon.modules;
 
-import com.example.addon.AddonTemplate;
-import meteordevelopment.meteorclient.events.render.Render3DEvent;
-import meteordevelopment.meteorclient.renderer.ShapeMode;
-import meteordevelopment.meteorclient.settings.ColorSetting;
-import meteordevelopment.meteorclient.settings.DoubleSetting;
-import meteordevelopment.meteorclient.settings.Setting;
-import meteordevelopment.meteorclient.settings.SettingGroup;
+import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.utils.render.color.Color;
-import meteordevelopment.meteorclient.utils.render.color.SettingColor;
-import meteordevelopment.orbit.EventHandler;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.phys.AABB;
+import meteordevelopment.meteorclient.utils.player.FindItemResult;
+import meteordevelopment.meteorclient.utils.player.InvUtils;
+import meteordevelopment.meteorclient.systems.modules.Categories;
+import meteororbit.orbit.EventHandler;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.ChargedProjectilesComponent;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.PlayerInteractItemC2SPacket;
+import net.minecraft.util.Hand;
 
-public class ModuleExample extends Module {
-    private final SettingGroup sgGeneral = this.settings.getDefaultGroup();
-    private final SettingGroup sgRender = this.settings.createGroup("Render");
+public class TridentLunge extends Module {
+    private int originalSlot = -1;
+    private int stage = 0; // 0 = idle, 1 = swapped, 2 = fired
 
-    /**
-     * Example setting.
-     * The {@code name} parameter should be in kebab-case.
-     * If you want to access the setting from another class, simply make the setting {@code public}, and use
-     * {@link meteordevelopment.meteorclient.systems.modules.Modules#get(Class)} to access the {@link Module} object.
-     */
-    private final Setting<Double> scale = sgGeneral.add(new DoubleSetting.Builder()
-        .name("scale")
-        .description("The size of the marker.")
-        .defaultValue(2.0d)
-        .range(0.5d, 10.0d)
-        .build()
-    );
-
-    private final Setting<SettingColor> color = sgRender.add(new ColorSetting.Builder()
-        .name("color")
-        .description("The color of the marker.")
-        .defaultValue(Color.MAGENTA)
-        .build()
-    );
-
-    /**
-     * The {@code name} parameter should be in kebab-case.
-     */
-    public ModuleExample() {
-        super(AddonTemplate.CATEGORY, "world-origin", "An example module that highlights the center of the world.");
+    public TridentLunge() {
+        super(Categories.Combat, "trident-lunge", "Swap to Riptide trident, lunge, swap back instantly.");
     }
 
-    /**
-     * Example event handling method.
-     * Requires {@link AddonTemplate#getPackage()} to be setup correctly, otherwise the game will crash whenever the module is enabled.
-     */
-    @EventHandler
-    private void onRender3d(Render3DEvent event) {
-        // Create & expand the marker object
-        AABB marker = new AABB(BlockPos.ZERO);
-        marker = marker.expandTowards(
-            scale.get() * marker.getXsize(),
-            scale.get() * marker.getYsize(),
-            scale.get() * marker.getZsize()
+    @Override
+    public void onActivate() {
+        // Find a trident in the hotbar that has Riptide
+        FindItemResult trident = InvUtils.find(itemStack ->
+            itemStack.getItem() == Items.TRIDENT && hasRiptide(itemStack)
         );
 
-        // Render the marker based on the color setting
-        event.renderer.box(marker, color.get(), color.get(), ShapeMode.Both, 0);
+        if (!trident.found() || trident.slot() > 8) {
+            warning("No Riptide trident in hotbar.");
+            toggle();
+            return;
+        }
+
+        originalSlot = mc.player.getInventory().getSelectedSlot();
+        InvUtils.swap(trident.slot(), true); // silent = true, no swing animation
+        stage = 1;
+    }
+
+    @EventHandler
+    private void onTick(TickEvent.Post event) {
+        if (stage == 1) {
+            // Fire the trident use packet (Riptide activates on "use")
+            mc.player.networkHandler.sendPacket(new PlayerInteractItemC2SPacket(
+                Hand.MAIN_HAND,
+                0,                              // sequence, fine as 0 for this
+                mc.player.getYaw(), mc.player.getPitch()
+            ));
+            stage = 2;
+        } else if (stage == 2) {
+            // Swap back the same tick progression — instant to the eye
+            InvUtils.swap(originalSlot, true);
+            stage = 0;
+            toggle(); // one-shot: turns itself off after completing
+        }
+    }
+
+    @Override
+    public void onDeactivate() {
+        // If toggled off mid-lunge, make sure we restore the slot
+        if (stage > 0 && originalSlot != -1) {
+            InvUtils.swap(originalSlot, true);
+            stage = 0;
+        }
+    }
+
+    private boolean hasRiptide(ItemStack stack) {
+        return EnchantmentHelper.getLevel(Enchantments.RIPTIDE, stack) > 0;
     }
 }
